@@ -39,10 +39,11 @@ impl std::fmt::Display for PageError {
     }
 }
 
+type Page = Option<Box<[u8; PAGE_SIZE]>>;
 pub struct Pager {
     file: File,
     file_length: usize,
-    pages: Box<[Option<[u8; PAGE_SIZE]>; TABLE_MAX_PAGES]>,
+    pages: Box<[Page; TABLE_MAX_PAGES]>,
 }
 
 impl Pager {
@@ -53,7 +54,6 @@ impl Pager {
             .create(true)
             .truncate(false)
             .open(filename)?;
-        //let file_length = file.seek(SeekFrom::End(0))?;
         let file_length = usize::try_from(file.seek(SeekFrom::End(0))?)?;
 
         Ok(Self {
@@ -69,26 +69,26 @@ impl Pager {
         }
 
         if self.pages[page_num].is_none() {
-            let mut page = [0u8; PAGE_SIZE];
-            let mut num_pages = self.file_length / PAGE_SIZE;
-
-            if !(self.file_length).is_multiple_of(PAGE_SIZE) {
-                num_pages += 1;
-            }
+            let mut page = Box::new([0u8; PAGE_SIZE]);
+            let num_pages = self.file_length.div_ceil(PAGE_SIZE);
 
             if page_num <= num_pages {
                 self.file
                     .seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
-                let _ = self.file.read(&mut page)?;
+                let _ = self.file.read(&mut *page)?;
             }
             self.pages[page_num] = Some(page);
         }
 
-        Ok(self.pages[page_num].as_mut().unwrap())
+        // Safe unwrap: page is always allocated
+        Ok(self.pages[page_num]
+            .as_mut()
+            .map(|page| &mut page[..])
+            .unwrap())
     }
 
     fn flush(&mut self, page_num: usize, size: usize) {
-        if let Some(page) = self.pages[page_num] {
+        if let Some(page) = &self.pages[page_num] {
             self.file
                 .seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64))
                 .expect("Unable to seek in flush");
@@ -149,6 +149,50 @@ impl Drop for Table {
 
         for page in pager.pages.iter_mut() {
             *page = None;
+        }
+    }
+}
+
+pub struct Cursor<'a> {
+    table: &'a mut Table,
+    row_num: usize,
+    pub end_of_table: bool,
+}
+
+impl<'a> Cursor<'a> {
+    pub fn from_start(table: &'a mut Table) -> Self {
+        let row_num = table.num_rows;
+        Self {
+            table,
+            row_num: 0,
+            end_of_table: row_num == 0,
+        }
+    }
+
+    pub fn from_end(table: &'a mut Table) -> Self {
+        let row_num = table.num_rows;
+        Self {
+            table,
+            row_num,
+            end_of_table: true,
+        }
+    }
+
+    pub fn value(&mut self) -> &mut [u8] {
+        let row_num = self.row_num;
+        let page_num = row_num / ROWS_PER_PAGE;
+        let page = self.table.pager.get_page(page_num).unwrap();
+
+        let row_offset = row_num % ROWS_PER_PAGE;
+        let byte_offset = row_offset * ROW_SIZE;
+
+        &mut page[byte_offset..byte_offset + ROW_SIZE]
+    }
+
+    pub fn advance(&mut self) {
+        self.row_num += 1;
+        if self.row_num >= self.table.num_rows {
+            self.end_of_table = true;
         }
     }
 }

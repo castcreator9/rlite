@@ -4,7 +4,7 @@ mod pager;
 mod tokenizer;
 
 use constants::TABLE_MAX_ROWS;
-use pager::Table;
+use pager::{Cursor, Table};
 use tokenizer::{Row, Statement, StatementType, do_meta_command};
 
 enum ExecuteError {
@@ -38,9 +38,10 @@ fn execute_insert(statement: &Statement, table: &mut Table) -> Result<(), Execut
         return Err(ExecuteError::TableFull);
     }
 
-    let page = table.row_slot(table.num_rows);
-    if let Some(row) = &statement.row {
-        page.copy_from_slice(&row.serialize());
+    let mut cursor = Cursor::from_end(table);
+    let row = cursor.value();
+    if let Some(row_to_insert) = &statement.row {
+        row.copy_from_slice(&row_to_insert.serialize());
         table.num_rows += 1;
     }
 
@@ -48,9 +49,11 @@ fn execute_insert(statement: &Statement, table: &mut Table) -> Result<(), Execut
 }
 
 fn execute_select(table: &mut Table) {
-    for i in 0..table.num_rows {
-        let row = table.row_slot(i);
-        Row::deserialize(row).print();
+    let mut cursor = Cursor::from_start(table);
+
+    while !cursor.end_of_table {
+        Row::deserialize(cursor.value()).print();
+        cursor.advance();
     }
 }
 
